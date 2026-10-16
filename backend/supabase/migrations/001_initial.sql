@@ -1,0 +1,26 @@
+create extension if not exists pgcrypto;
+create table public.healthcare_organizations(id uuid primary key default gen_random_uuid(), name text not null unique, is_synthetic boolean not null default true, created_at timestamptz not null default now());
+create table public.profiles(id uuid primary key references auth.users(id) on delete cascade, display_name text not null, role text not null check(role in ('patient','doctor')), organization_id uuid references public.healthcare_organizations(id), is_synthetic boolean not null default false, created_at timestamptz not null default now());
+create table public.medical_documents(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id) on delete cascade, title text not null, category text not null, provider_name text not null, document_date date, storage_path text not null unique, content_type text not null, processing_status text not null default 'pending', verification_status text not null default 'unverified', created_at timestamptz not null default now());
+create table public.medical_records(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id) on delete cascade, source_document_id uuid references public.medical_documents(id) on delete set null, title text not null, category text not null, provider_name text not null, record_date date not null, verification_status text not null default 'unverified', structured_data jsonb not null default '{}'::jsonb, created_at timestamptz not null default now());
+create table public.encounters(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id), record_id uuid references public.medical_records(id), organization_id uuid references public.healthcare_organizations(id), occurred_at timestamptz not null, note text, created_at timestamptz not null default now());
+create table public.observations(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id), record_id uuid not null references public.medical_records(id) on delete cascade, test_name text not null, value_text text not null, unit text, observed_at timestamptz not null, created_at timestamptz not null default now());
+create table public.medications(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id), record_id uuid not null references public.medical_records(id) on delete cascade, name text not null, dose_text text, status text not null default 'documented', created_at timestamptz not null default now());
+create table public.sharing_grants(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id), doctor_id uuid not null references public.profiles(id), organization_id uuid not null references public.healthcare_organizations(id), record_ids uuid[] not null check(cardinality(record_ids)>0), purpose text not null, token_hash text not null unique, expires_at timestamptz not null, revoked_at timestamptz, created_at timestamptz not null default now());
+create table public.document_extractions(id uuid primary key default gen_random_uuid(), patient_id uuid not null references public.profiles(id), document_id uuid not null references public.medical_documents(id) on delete cascade, engine text not null, output jsonb not null, review_status text not null default 'pending', reviewed_at timestamptz, created_at timestamptz not null default now());
+create table public.access_audit_logs(id uuid primary key default gen_random_uuid(), actor_id uuid references public.profiles(id), patient_id uuid references public.profiles(id), action text not null, outcome text not null, resource_type text not null, grant_id uuid references public.sharing_grants(id), created_at timestamptz not null default now());
+create index on public.medical_records(patient_id,record_date desc);create index on public.medical_documents(patient_id,created_at desc);create index on public.sharing_grants(patient_id,expires_at);create index on public.sharing_grants(doctor_id,expires_at);create index on public.access_audit_logs(patient_id,created_at desc);
+-- The backend uses a service-role connection and checks authorization for every endpoint.
+-- All tables deny direct client access by default; no permissive policies are installed.
+alter table public.healthcare_organizations enable row level security;
+alter table public.profiles enable row level security;
+alter table public.medical_documents enable row level security;
+alter table public.medical_records enable row level security;
+alter table public.encounters enable row level security;
+alter table public.observations enable row level security;
+alter table public.medications enable row level security;
+alter table public.sharing_grants enable row level security;
+alter table public.document_extractions enable row level security;
+alter table public.access_audit_logs enable row level security;
+insert into storage.buckets(id,name,public,file_size_limit,allowed_mime_types) values ('medical-documents','medical-documents',false,10485760,array['application/pdf','image/png','image/jpeg','image/webp']) on conflict(id) do nothing;
+-- No storage policies: signed uploads and signed reads are issued only by the backend.
